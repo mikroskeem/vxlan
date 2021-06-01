@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+brdname="vxl-br0"
+
+# Set up bridge when needed
+if [ -z "${IN_NS-}" ] && ! ip link show "${brdname}" &>/dev/null; then
+	ip link add name "${brdname}" type bridge
+	ip addr add 10.145.0.254/24 dev "${brdname}"
+	ip link set "${brdname}" up
+fi
+
 if [ -z "${IN_NS-}" ]; then
 	IN_NS="vxl-$(uuidgen | tr -d '-')"
 	ip netns add "${IN_NS}"
@@ -9,34 +18,40 @@ if [ -z "${IN_NS-}" ]; then
 	# Create veth pair and move it to ${IN_NS}
 	pairname="veth${IN_NS: -2}"
 	peername="veth-${IN_NS: -4}"
+	ip=$(( $(bridge --json link show "${brdname}" | jq -r 'length') + 1 ))
 
 	ip link add name "${pairname}" type veth peer name "${peername}"
-	ip addr add 10.145.0.254/24 dev "${pairname}"
-	ip link set dev "${pairname}" up
+	ip link set dev "${peername}" up
 
-	ip link set dev "${peername}" netns "${IN_NS}"
-	ip netns exec "${IN_NS}" ip addr add 10.145.0.1/24 dev "${peername}"
-	ip netns exec "${IN_NS}" ip link set dev "${peername}" up
+	ip link set dev "${pairname}" netns "${IN_NS}"
+	ip netns exec "${IN_NS}" ip addr add 10.145.0."${ip}"/24 dev "${pairname}"
+	ip netns exec "${IN_NS}" ip link set dev "${pairname}" up
 
-	exec ip netns exec "${IN_NS}" env IN_NS="${IN_NS}" "${0}" "${@}"
+	# Attach host side veth to the br
+	ip link set dev "${peername}" master "${brdname}"
+
+	exec ip netns exec "${IN_NS}" env IN_NS="${IN_NS}" NUM="${ip}" "${0}" "${@}"
 fi
 
 nsn="${IN_NS}"
 nsp="$(readlink /proc/$$/ns/net)"
 echo "in ns: ${nsn} ($nsp)"
+echo "num: ${NUM}"
 
 main_eth="$(ip --json link list | jq -r '[.[] | select(.link_type == "ether") | .ifname][0]')"
-
+laddr="$(ip --json addr show dev "${main_eth}" | jq -r '[.[0].addr_info[] | select(.family == "inet")][0].local')"
+grp="225.0.0.0"
 vxl="vxl0"
+
 ip link add "${vxl}" type vxlan \
 	id 100 \
 	dstport 4789 \
-	local 10.145.0.1 \
-	remote 10.145.0.254 \
+	local "${laddr}" \
+	group "${grp}" \
 	dev "${main_eth}" \
 	ttl 5
 
-ip addr add 10.20.1.1/24 dev "${vxl}"
+ip addr add 10.20.1."${NUM}"/24 dev "${vxl}"
 ip link set "${vxl}" up
 
 bash
