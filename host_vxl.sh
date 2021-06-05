@@ -2,19 +2,18 @@
 set -euo pipefail
 
 vxl=vxl-host
-#veth=$(ip --json link list | jq -r '[.[] | select((.link_type == "ether") and (.link_netnsid != null)) | .ifname][0]')
 veth="vxl-br0"
-grp="225.0.0.0"
+laddr6="$(ip --json addr show dev "${veth}" | jq -r '[.[0].addr_info[] | select((.family == "inet6") and (.local | startswith("fe")))][0].local')"
+grp="ff02::1"
 
-ip link add "${vxl}" type vxlan \
+ip -6 link add "${vxl}" type vxlan \
         id 100 \
         dstport 4789 \
-        local 10.145.0.254 \
 	group "${grp}" \
         dev "${veth}" \
         ttl 5
 
-ip addr add 10.20.1.254/24 dev "${vxl}"
+ip -6 addr add fe13:37:ffff:ffff:ffff:ffff::ffff/64 dev "${vxl}"
 ip link set "${vxl}" up
 bash
 ip link del "${vxl}"
